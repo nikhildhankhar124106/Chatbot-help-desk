@@ -1,0 +1,78 @@
+COLLEGE FAQ — SAMPLE TEMPLATE
+==============================
+Replace this content with your actual college FAQ and save as a .pdf file
+in this folder (server/data/faq/). The server will auto-index it on startup.
+
+ADMISSION PROCESS
+-----------------
+Q: What is the admission process for BTech?
+A: Students must qualify JEE Main / JEE Advanced. Counselling is done through JoSAA for IITs/NITs or state counselling boards. Applications open in June every year.
+
+Q: What is the last date to apply?
+A: Applications for 2025-26 close on July 15, 2025. Late applications are not accepted.
+
+Q: What documents are required for admission?
+A: Class 10 and 12 mark sheets, JEE scorecard, category certificate (if applicable), Aadhaar card, and passport-size photographs.
+
+FEES STRUCTURE
+--------------
+Q: What is the total fee for BTech?
+A: The total BTech fee is approximately ₹6.5 Lakhs over 4 years (₹1.6L per year). SC/ST students pay ₹10,000 per year. Fee can be paid semester-wise.
+
+Q: Are there any scholarships available?
+A: Yes. Merit-cum-means scholarships are available for students with family income below ₹5 LPA. Central Sector Scheme and state scholarships also apply.
+
+Q: What is the hostel fee?
+A: Hostel fee is ₹25,000 per semester including mess charges. AC rooms are available at ₹35,000 per semester.
+
+COURSES & DEPARTMENTS
+---------------------
+Q: Which BTech branches are available?
+A: Computer Science Engineering, Electronics & Communication, Mechanical Engineering, Civil Engineering, Chemical Engineering, Electrical Engineering, Data Science, and AI & ML.
+
+Q: Is there a lateral entry for BTech?
+A: Yes, diploma holders can join directly in 2nd year (3rd semester) through state lateral entry exam (LEET).
+
+Q: Does the college offer MTech and PhD programs?
+A: Yes. MTech is offered in 12 specializations. PhD programs are available in all departments with GATE fellowship of ₹12,400/month.
+
+PLACEMENTS
+----------
+Q: What is the average placement package?
+A: The average package for 2024 batch was ₹14.2 LPA. Highest package was ₹56 LPA offered by Google.
+
+Q: Which companies visit for campus placements?
+A: Top recruiters include Google, Microsoft, Amazon, Infosys, TCS, Wipro, Deloitte, Samsung, Qualcomm, and Goldman Sachs. Over 300 companies participated in 2024.
+
+Q: What is the placement percentage?
+A: 92% of eligible students (opted for placements) received job offers. 85% of total batch was placed in 2024.
+
+HOSTEL & FACILITIES
+-------------------
+Q: Is hostel accommodation guaranteed for all students?
+A: First-year students are guaranteed hostel accommodation. Senior students are allotted based on CGPA merit.
+
+Q: What facilities are available on campus?
+A: 24x7 Wi-Fi, library with 50,000+ books, sports complex, gym, medical center, canteen, ATM, and a central computing facility with 500 systems.
+
+Q: Is ragging allowed?
+A: Ragging is strictly prohibited under UGC Anti-Ragging Regulations 2009. Any incident should be reported to the Anti-Ragging Committee or helpline 1800-180-5522.
+
+EXAMS & ACADEMICS
+-----------------
+Q: What is the grading system?
+A: 10-point CGPA grading system. Minimum CGPA of 5.0 required to pass. Students with CGPA below 4.0 for 2 consecutive semesters face academic probation.
+
+Q: How many backlogs are allowed?
+A: Students can have a maximum of 4 active backlogs at any time. More than 4 backlogs result in detention from moving to the next year.
+
+Q: When are semester exams held?
+A: End-semester exams are held in November-December (Odd semester) and April-May (Even semester). Mid-semester exams are in September and February.
+
+CONTACT & SUPPORT
+-----------------
+Q: What is the college helpdesk number?
+A: Academic helpdesk: 1800-XXX-XXXX (toll-free). Email: helpdesk@college.ac.in. Office hours: Mon-Sat, 9 AM - 5 PM.
+
+Q: Where is the college located?
+A: The college is located at [City, State]. Nearest railway station is [Station Name] (5 km). Airport is [Airport Name] (25 km).

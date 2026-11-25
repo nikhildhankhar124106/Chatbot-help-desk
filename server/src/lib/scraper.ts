@@ -1,0 +1,282 @@
+import { createRequire } from "node:module";
+import { RSS_FEEDS, type FeedSource } from "./newsFeeds.js";
+import axios from "axios";
+import * as cheerio from "cheerio";
+
+// rss-parser is a CJS module; use createRequire for nodenext ESM compatibility
+const _require = createRequire(import.meta.url);
+type RssParser = import("rss-parser");
+type RssParserConstructor = new (options?: ConstructorParameters<typeof import("rss-parser")>[0]) => RssParser;
+const ParserCtor = _require("rss-parser") as RssParserConstructor;
+
+export interface NewsArticle {
+  title: string;
+  summary: string;
+  url: string;
+  source: string;
+  category: string | null;
+  image: string;
+  publishedAt: Date | null;
+}
+
+const CATEGORY_MAP: Record<string, string[]> = {
+  "Admissions": ["admission", "enrolment", "apply now", "application form", "registration", "counselling", "intake", "seat allotment", "merit list", "cutoff", "eligibility"],
+  "Results": ["result", "scorecard", "rank", "cutoff", "board result", "entrance result", "merit list", "pass percentage"],
+  "Placements": ["placement", "recruitment", "salary package", "job offer", "hiring", "tpo", "campus drive", "highest package", "average package", "ctc", "mnc recruitment", "placement report"],
+  "Colleges": ["college", "university", "campus", "institute", "iit", "nit", "iim", "aiims", "bits", "vit", "ranking", "infrastructure", "faculty"],
+  "Internships": ["internship", "stipend", "summer intern", "winter intern", "trainee", "industrial training", "vocational training", "intern recruitment"],
+  "Scholarships": ["scholarship", "financial aid", "grant", "fellowship", "stipend", "tuition waiver", "fee concession", "merit scholarship", "nsp", "insPIRE"],
+  "Tech": ["tech", "ai", "software", "hardware", "coding", "programming", "robotics", "data science", "cybersecurity", "engineering", "btech", "mtech"],
+  "Business": ["business", "startup", "economy", "market", "finance", "corporate", "investment", "entrepreneur", "funding", "mba", "iim", "bba", "management"],
+  "Science": ["science", "research", "physics", "chemistry", "biology", "astronomy", "scientific", "isro", "iisc", "iiser", "bsc", "msc"],
+  "Medical": ["medical", "health", "wellness", "medicine", "doctor", "hospital", "disease", "vaccine", "neet medical", "mbbs", "aiims"],
+};
+
+/**
+ * Assigns a category based on keywords in title or summary.
+ */
+function categorizeArticle(title: string, summary: string): string | null {
+  const content = `${title} ${summary}`.toLowerCase();
+  for (const [cat, keywords] of Object.entries(CATEGORY_MAP)) {
+    if (keywords.some((k) => content.includes(k.toLowerCase()))) {
+      return cat;
+    }
+  }
+  return "General";
+}
+
+// Instantiate with customFields for media thumbnails
+const parser = new ParserCtor({
+  customFields: {
+    item: [
+      ["media:thumbnail", "mediaThumbnail"],
+      ["media:content", "mediaContent"],
+      ["enclosure", "enclosure"],
+    ] as any,
+  },
+});
+
+const HTTP_TIMEOUT = 4000; // 4s max per article
+
+// Reusable axios instance with a browser-like User-Agent
+const httpClient = axios.create({
+  timeout: HTTP_TIMEOUT,
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+  },
+  maxRedirects: 5,
+  // Don't throw on non-2xx — just return whatever we got
+  validateStatus: () => true,
+});
+
+/**
+ * Strips HTML tags from a string and trims whitespace.
+ */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Extracts an image URL from an RSS feed item (best-effort).
+ * Ignores generic Google News logos and icons.
+ */
+function extractRssImage(item: any): string {
+  const candidates = [
+    item.mediaThumbnail?.$.url,
+    item.mediaContent?.$.url,
+    item.enclosure?.url,
+  ].filter(Boolean);
+
+  for (const url of candidates) {
+    if (typeof url !== "string") continue;
+    // Ignore generic Google News icons/logos (usually on lh3.googleusercontent.com)
+    // Real thumbnails are also on this domain but usually have different path patterns.
+    // However, if the URL is very short or contains 'logo'/'icon', skip it.
+    const lower = url.toLowerCase();
+    if (lower.includes("favicon") || lower.includes("logo") || lower.includes("icon")) continue;
+    if (lower.includes("googleusercontent.com") && url.length < 100) continue; 
+    
+    return url;
+  }
+
+  const imgMatch = (item["content:encoded"] || item.content || "").match(
+    /<img[^>]+src=["']([^"']+)["']/i
+  );
+  if (imgMatch?.[1]) return imgMatch[1];
+  return "";
+}
+
+/**
+ * Fetches the article page and extracts the best social-share image.
+ * Falls back to empty string on any error.
+ */
+async function fetchOgImage(url: string): Promise<string> {
+  try {
+    const { data, status, headers } = await httpClient.get<string>(url);
+    if (status < 200 || status >= 400 || typeof data !== "string") return "";
+
+    // If we were redirected back to Google News (e.g. login wall), ignore
+    if (headers["content-location"]?.includes("google.com/news")) return "";
+
+    const $ = cheerio.load(data);
+
+    // Prioritize high-quality social images
+    const img =
+      $('meta[property="og:image:secure_url"]').attr("content") ||
+      $('meta[property="og:image"]').attr("content") ||
+      $('meta[name="og:image"]').attr("content") ||
+      $('meta[name="twitter:image:src"]').attr("content") ||
+      $('meta[name="twitter:image"]').attr("content") ||
+      $('meta[property="twitter:image"]').attr("content") ||
+      $('meta[itemprop="image"]').attr("content") ||
+      $('link[rel="image_src"]').attr("href") ||
+      "";
+
+    if (!img || !img.startsWith("http")) return "";
+
+    // Filter out common trackers/transparent pixels/generic icons
+    const lower = img.toLowerCase();
+    if (
+      lower.includes("pixel") ||
+      lower.includes("tracking") ||
+      lower.includes("spacer") ||
+      lower.includes("favicon") ||
+      lower.includes("logo") ||
+      lower.includes("ad.doubleclick") ||
+      lower.includes("sprite")
+    ) {
+      return "";
+    }
+
+    return img;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Fetches and normalizes articles from a single RSS feed.
+ * Then resolves OG images for any article that lacks one from the feed.
+ */
+async function fetchFeed(feed: FeedSource): Promise<NewsArticle[]> {
+  try {
+    const result = await parser.parseURL(feed.url);
+    const rawArticles: NewsArticle[] = [];
+
+    for (const item of result.items.slice(0, 8)) {
+      if (!item.title || !item.link) continue;
+
+      const title = stripHtml(item.title).slice(0, 250);
+      const summary = stripHtml(
+        item["content:encodedSnippet"] ||
+          item.contentSnippet ||
+          item.content ||
+          item.summary ||
+          ""
+      ).slice(0, 500) || "No summary available.";
+
+      rawArticles.push({
+        title,
+        summary,
+        url: item.link,
+        source: feed.name,
+        category: categorizeArticle(title, summary),
+        image: extractRssImage(item), // quick check — usually empty for Google News
+        publishedAt: item.pubDate ? new Date(item.pubDate) : null,
+      });
+    }
+
+    // ── OG image resolution ─────────────────────────────────────────────
+    // For articles without an RSS image, fetch the page and extract og:image.
+    // We do this concurrently (but cap concurrency implicitly via Promise.all).
+    const withImages = await Promise.all(
+      rawArticles.map(async (article) => {
+        if (article.image) return article; // already has an image
+        const ogImage = await fetchOgImage(article.url);
+        return { ...article, image: ogImage };
+      })
+    );
+
+    const found = withImages.filter((a) => a.image).length;
+    console.log(
+      `[News Scraper] ✅ ${feed.name}: ${rawArticles.length} articles (${found} with images)`
+    );
+    return withImages;
+  } catch (err: any) {
+    console.error(`[News Scraper] ❌ ${feed.name} failed:`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Fetches news from ALL configured RSS feeds concurrently.
+ * Uses Promise.allSettled so one failing feed never crashes the rest.
+ */
+export async function scrapeAllNews(): Promise<NewsArticle[]> {
+  let dynamicFeeds: FeedSource[] = [];
+  try {
+    // Dynamic import to avoid circular dependencies if any
+    const { sql } = await import("./db.js");
+    const colleges = await sql`SELECT DISTINCT college FROM college_achievements`;
+    // Randomly sample 15 colleges per run to avoid hitting Google News too hard.
+    // This provides freshness over time without being aggressive.
+    const sample = colleges.sort(() => 0.5 - Math.random()).slice(0, 15);
+    
+    dynamicFeeds = sample.map((c: any) => ({
+      name: c.college,
+      url: `https://news.google.com/rss/search?q=${encodeURIComponent(c.college + " campus news admission placements")}&hl=en-IN&gl=IN&ceid=IN:en`
+    }));
+    console.log(`[News Scraper] Sampled 15 dynamic feeds from ${colleges.length} total colleges.`);
+  } catch (err: any) {
+    console.error(`[News Scraper] Failed to load dynamic feeds from DB:`, err.message);
+  }
+
+  const allSources = [...RSS_FEEDS, ...dynamicFeeds];
+
+  console.log(
+    `[News Scraper] Starting scrape of ${allSources.length} sources...`
+  );
+
+  // ── Concurrency Limiting (Batching) ─────────────────────────────────
+  // Hit Google News in smaller waves (e.g. 2 at a time) to avoid 503 rate-limiting.
+  const BATCH_SIZE = 2;
+  const BATCH_DELAY_MS = 5000; // 5s between waves
+  const allArticles: NewsArticle[] = [];
+
+  for (let i = 0; i < allSources.length; i += BATCH_SIZE) {
+    const batch = allSources.slice(i, i + BATCH_SIZE);
+    console.log(`[News Scraper] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(allSources.length / BATCH_SIZE)}...`);
+    
+    const results = await Promise.allSettled(batch.map(fetchFeed));
+    
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        allArticles.push(...result.value);
+      }
+    }
+
+    if (i + BATCH_SIZE < allSources.length) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+  }
+
+  // Deduplicate by URL
+  const seen = new Set<string>();
+  const unique = allArticles.filter((a) => {
+    if (seen.has(a.url)) return false;
+    seen.add(a.url);
+    return true;
+  });
+
+  const withImg = unique.filter((a) => a.image).length;
+  console.log(
+    `[News Scraper] Done. ${unique.length} unique articles (${withImg} with images).`
+  );
+  return unique;
+}

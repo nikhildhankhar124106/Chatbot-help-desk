@@ -1,0 +1,257 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+import postgres from "postgres";
+
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  console.error("❌ DATABASE_URL is not set in environment variables!");
+  throw new Error("DATABASE_URL is required");
+}
+
+const isNeon = connectionString.includes("neon.tech") || connectionString.includes("sslmode=require");
+
+export const sql = postgres(connectionString, {
+  ...(isNeon ? { ssl: "require" as const } : {}),
+  max: 10,
+  idle_timeout: 20,
+  connect_timeout: 30,
+});
+
+export async function initNewsTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS news (
+      id          SERIAL PRIMARY KEY,
+      title       TEXT NOT NULL,
+      summary     TEXT,
+      url         TEXT UNIQUE NOT NULL,
+      source      TEXT,
+      category    TEXT,
+      image       TEXT,
+      published_at TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    ) 
+  `;
+  // ── Migrations: add new columns to existing tables safely ──────────
+  await sql`ALTER TABLE news ADD COLUMN IF NOT EXISTS category TEXT`;
+  await sql`ALTER TABLE news ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'published'`;
+  // Index for fast source filtering and date ordering
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_news_source ON news (source)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_news_category ON news (category)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_news_published_at ON news (published_at DESC)
+  `;
+  console.log("PostgreSQL News Table Initialized.");
+}
+
+export async function initAchievementsTable() {
+  // Main college achievements table
+  await sql`
+    CREATE TABLE IF NOT EXISTS college_achievements (
+      id                  SERIAL PRIMARY KEY,
+      college             TEXT UNIQUE NOT NULL,
+      aliases             TEXT[]        DEFAULT '{}',
+      nirf_rank           INT,
+      nirf_category       TEXT          DEFAULT 'Engineering',
+      global_rank         INT,
+      patents             INT           DEFAULT 0,
+      research_papers     INT           DEFAULT 0,
+      hackathons_won      INT           DEFAULT 0,
+      startups_incubated  INT           DEFAULT 0,
+      awards              TEXT[]        DEFAULT '{}',
+      city                TEXT,
+      state               TEXT,
+      fees_range          TEXT,
+      avg_package         NUMERIC       DEFAULT 0,
+      highest_package     NUMERIC       DEFAULT 0,
+      user_rating         NUMERIC       DEFAULT 0,
+      total_reviews       INT           DEFAULT 0,
+      logo_url            TEXT,
+      website             TEXT,
+      last_updated        TIMESTAMPTZ   DEFAULT NOW()
+    )
+  `;
+
+  // ── Migrations: add columns that may not exist in older installs ────
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}'`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS global_rank INT`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS patents INT DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS research_papers INT DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS hackathons_won INT DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS startups_incubated INT DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS awards TEXT[] DEFAULT '{}'`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS nirf_category TEXT DEFAULT 'Engineering'`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS city TEXT`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS state TEXT`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS fees_range TEXT`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS avg_package NUMERIC DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS highest_package NUMERIC DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS user_rating NUMERIC DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS total_reviews INT DEFAULT 0`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS logo_url TEXT`;
+  await sql`ALTER TABLE college_achievements ADD COLUMN IF NOT EXISTS website TEXT`;
+
+  // Audit log for AI-extracted increments
+  await sql`
+    CREATE TABLE IF NOT EXISTS college_achievements_events (
+      id           SERIAL PRIMARY KEY,
+      college      TEXT         NOT NULL,
+      field        TEXT         NOT NULL,
+      delta        INT          NOT NULL,
+      source_url   TEXT,
+      extracted_at TIMESTAMPTZ  DEFAULT NOW()
+    )
+  `;
+
+  // Indexes
+  await sql`CREATE INDEX IF NOT EXISTS idx_achievements_nirf ON college_achievements (nirf_rank ASC NULLS LAST)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_achievements_category ON college_achievements (nirf_category)`;
+
+  console.log("PostgreSQL Achievements Table Initialized.");
+}
+
+
+
+
+export async function initPredictionsTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS predictions (
+      id          SERIAL PRIMARY KEY,
+      rank        INT NOT NULL,
+      category    TEXT NOT NULL,
+      exam_type   TEXT NOT NULL,
+      gender      TEXT,
+      state       TEXT,
+      results     JSONB NOT NULL,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+  console.log("PostgreSQL Predictions Table Initialized.");
+}
+
+export async function initCutoffsTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS college_cutoffs (
+      id          SERIAL PRIMARY KEY,
+      college     TEXT NOT NULL,
+      branch      TEXT NOT NULL,
+      exam_type   TEXT NOT NULL,
+      category    TEXT NOT NULL,
+      gender      TEXT DEFAULT 'Gender-Neutral',
+      quota       TEXT DEFAULT 'OS',
+      closing_rank INT NOT NULL,
+      year        INT DEFAULT 2024,
+      round       INT DEFAULT 6,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+  // Index for fast retrieval based on rank and exam
+  await sql`CREATE INDEX IF NOT EXISTS idx_cutoffs_rank_exam ON college_cutoffs (exam_type, closing_rank)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_cutoffs_college ON college_cutoffs (college)`;
+  console.log("PostgreSQL Cutoffs Table Initialized.");
+}
+
+export async function initDB() {
+  try {
+    // Core Facts table (Structured data)
+    await sql`
+      CREATE TABLE IF NOT EXISTS college_stats (
+        id SERIAL PRIMARY KEY,
+        category TEXT,
+        key TEXT UNIQUE,
+        value TEXT
+      )
+    `;
+
+    // News table
+    await initNewsTable();
+
+    // College achievements & rankings table
+    await initAchievementsTable();
+
+    // Predictions table
+    await initPredictionsTable();
+
+    // Cutoffs table
+    await initCutoffsTable();
+
+    // Admin tables
+    await sql`
+      CREATE TABLE IF NOT EXISTS admin_users (
+        id         SERIAL PRIMARY KEY,
+        uid        TEXT UNIQUE NOT NULL,
+        email      TEXT UNIQUE NOT NULL,
+        name       TEXT,
+        role       TEXT DEFAULT 'admin',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS user_activity (
+        id          SERIAL PRIMARY KEY,
+        uid         TEXT NOT NULL,
+        email       TEXT,
+        action      TEXT NOT NULL,
+        details     JSONB,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_user_activity_uid ON user_activity (uid)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_user_activity_created ON user_activity (created_at DESC)
+    `;
+
+    // API Usage tracking table
+    await sql`
+      CREATE TABLE IF NOT EXISTS api_usage (
+        id              SERIAL PRIMARY KEY,
+        model           TEXT NOT NULL,
+        endpoint_type   TEXT NOT NULL,
+        prompt_tokens   INT DEFAULT 0,
+        completion_tokens INT DEFAULT 0,
+        total_tokens    INT DEFAULT 0,
+        cost            NUMERIC DEFAULT 0,
+        metadata        JSONB,
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage (created_at DESC)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_api_usage_model ON api_usage (model)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_api_usage_endpoint ON api_usage (endpoint_type)
+    `;
+
+    // ── Documents tracking table ─────────────────────────────────────
+    // Tracks which PDFs/FAQs have been seeded into Qdrant (college_docs)
+    // so we never re-embed the same file twice across server restarts.
+    await sql`
+      CREATE TABLE IF NOT EXISTS documents (
+        id              SERIAL PRIMARY KEY,
+        filename        TEXT UNIQUE NOT NULL,
+        source          TEXT NOT NULL DEFAULT 'faq_seed',
+        total_chunks    INT DEFAULT 0,
+        file_hash       TEXT,
+        status          TEXT DEFAULT 'indexed',
+        indexed_at      TIMESTAMPTZ DEFAULT NOW(),
+        last_updated    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_documents_filename ON documents (filename)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_documents_source   ON documents (source)`;
+
+    console.log("PostgreSQL Database Initialized.");
+  } catch (err) {
+    console.error("Failed to initialize PostgreSQL:", err);
+    throw err;
+  }
+}

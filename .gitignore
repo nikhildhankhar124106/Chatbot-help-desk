@@ -1,0 +1,53 @@
+# Environment files
+.env
+.env.local
+.env.*
+!.env.example
+server/.env
+web/.env.local
+web/.env
+
+# Node modules
+node_modules/
+server/node_modules/
+web/node_modules/
+
+# Build output
+.next/
+dist/
+build/
+server/dist/
+
+# Databases
+*.db
+*.sqlite
+server/chat.db
+
+# Storage & Uploads
+uploads/
+server/uploads/
+*.traineddata
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build artifacts
+server/dist/
+web/.next/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large binary / training data
+*.traineddata
+server/eng.traineddata
+
+# Uploaded files
+server/uploads/
+
+# Scratch / temp
+scratch/

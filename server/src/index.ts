@@ -1,0 +1,223 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+
+import { initHttpAgent } from "./lib/httpAgent.js";
+initHttpAgent(); // Establish global HTTP keep-alive pool before anything else
+
+import { validateEnv, env } from "./utils/env.js";
+validateEnv();
+
+import Fastify from "fastify";
+import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
+import { chatRoute } from "./routes/chat.js";
+import { newsRoute } from "./routes/news.js";
+import { rankingsRoute } from "./routes/rankings.js";
+import { ttsRoute } from "./routes/tts.js";
+import multipart from "@fastify/multipart";
+import { uploadRoute } from "./routes/upload.js";
+import { contactRoute } from "./routes/contact.js";
+import { cutoffRoute } from "./routes/cutoff.js";
+import { authRoute } from "./routes/auth.js";
+import { adminRoute } from "./routes/admin.js";
+import { registerRateLimiter } from "./guardrails/index.js";
+import { startNewsCron } from "./jobs/newsCron.js";
+import { seedCollegeAchievements, seedCutoffs } from "./lib/collegeSeeds.js";
+import { seedFAQDocuments } from "./lib/faqSeeder.js";
+
+import { qdrant } from "./lib/qdrant.js";
+import { initDB } from "./lib/db.js";
+import fastifyStatic from "@fastify/static";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const uploadsDir = path.join(__dirname, "../uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const app = Fastify({
+  logger: env.NODE_ENV === "development" ? {
+    level: "info",
+    transport: { target: "pino-pretty" }
+  } : {
+    level: "warn"
+  }
+});
+
+// ── Security Headers ────────────────────────────────────────────────
+await app.register(helmet, {
+  contentSecurityPolicy: false, // Disable CSP if it interferes with the frontend, or configure it properly
+});
+
+await app.register(cors, {
+  origin: env.ALLOWED_ORIGIN === "*" ? true : env.ALLOWED_ORIGIN,
+  methods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+});
+
+// ── Register global rate limiter ────────────────────────────────────
+registerRateLimiter(app);
+// ───────────────────────────────────────────────────────────────────
+
+await app.register(fastifyStatic, {
+  root: path.join(__dirname, "../uploads"),
+  prefix: "/uploads/",
+});
+
+await app.register(multipart, {
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB limit
+  },
+});
+
+await app.register(chatRoute);
+await app.register(newsRoute);
+await app.register(rankingsRoute);
+await app.register(ttsRoute);
+await app.register(contactRoute);
+await app.register(uploadRoute);
+await app.register(cutoffRoute);
+await app.register(authRoute);
+await app.register(adminRoute);
+
+async function initVectorDB() {
+  const collections = await qdrant.getCollections();
+  const existingNames = collections.collections.map((c) => c.name);
+
+  // ── college_docs (PDF uploads) ──────────────────────────────────────
+  if (!existingNames.includes("college_docs")) {
+    await qdrant.createCollection("college_docs", {
+      vectors: { size: 768, distance: "Cosine" },
+    });
+    console.log("Vector DB: 'college_docs' collection created.");
+  }
+
+  // ── college_news (RSS news articles) ───────────────────────────────
+  if (!existingNames.includes("college_news")) {
+    await qdrant.createCollection("college_news", {
+      vectors: { size: 768, distance: "Cosine" },
+    });
+    console.log("Vector DB: 'college_news' collection created.");
+  }
+
+  // Ensure payload indexes exist (safe to call even if they already exist)
+  try {
+    await qdrant.createPayloadIndex("college_docs", {
+      field_name: "document",
+      field_schema: "keyword",
+      wait: true,
+    });
+    await qdrant.createPayloadIndex("college_docs", {
+      field_name: "text",
+      field_schema: "text",
+      wait: true,
+    });
+    await qdrant.createPayloadIndex("college_news", {
+      field_name: "source",
+      field_schema: "keyword",
+      wait: true,
+    });
+    console.log("Vector DB Initialized: Payload indexes ensured.");
+  } catch (e) {
+    console.warn("Notice: One or more payload indexes could not be created (they may already exist).");
+  }
+}
+
+// ── Readiness tracking ──────────────────────────────────────────────
+let isReady = false;
+
+// Initialization tasks
+try {
+  await initDB();
+} catch (e) {
+  console.warn("⚠️ PostgreSQL initialization failed (continuing in degraded/offline DB mode):", (e as Error).message);
+}
+
+// ── Pre-warm database connections ───────────────────────────────────
+// Fires a trivial query on each connection so the pool is hot before
+// the first real user request arrives. Done after initDB() to reuse
+// the already-established pool.
+try {
+  const { sql } = await import("./lib/db.js");
+  const { qdrant } = await import("./lib/qdrant.js");
+  await Promise.all([
+    sql`SELECT 1`,          // warm PostgreSQL connection pool
+    qdrant.getCollections(), // warm Qdrant HTTP client
+  ]);
+  console.log("[Warm-up] PostgreSQL and Qdrant connections pre-warmed ✅");
+} catch (e) {
+  console.warn("[Warm-up] Pre-warm failed (non-fatal):", e);
+}
+// ──────────────────────────────────────────────────────────────────
+
+// ── Health Check ────────────────────────────────────────────────────
+app.get("/health", async () => {
+  return { status: "ok", timestamp: new Date().toISOString() };
+});
+
+// ── Readiness Check ─────────────────────────────────────────────────
+// Returns 200 { ready: true } only after background init (VectorDB,
+// seeding, cron) has completed. The frontend can poll this once on
+// mount to decide whether to show a "warming up" banner.
+app.get("/ready", async (_req, reply) => {
+  return reply.status(isReady ? 200 : 503).send({ ready: isReady });
+});
+
+// ── Global Error Handler ────────────────────────────────────────────
+app.setErrorHandler((error, request, reply) => {
+  const err = error as any;
+  request.log.error(err);
+  const statusCode = err.statusCode || 500;
+  reply.status(statusCode).send({
+    error: "Internal Server Error",
+    message: env.NODE_ENV === "development" ? err.message : undefined,
+  });
+});
+
+// ── Graceful Shutdown ───────────────────────────────────────────────
+const shutdown = async (signal: string) => {
+  app.log.info(`Received ${signal}. Shutting down...`);
+  try {
+    await app.close();
+    app.log.info("Server closed successfully.");
+    process.exit(0);
+  } catch (err) {
+    app.log.error(err, "Error during shutdown");
+    process.exit(1);
+  }
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+const PORT = env.PORT;
+
+try {
+  const address = await app.listen({ port: PORT, host: "0.0.0.0" });
+  app.log.info(`Server running on ${address}`);
+
+  // ── Background Heavy Initialization ────────────────────────────────
+  // These don't block the server from accepting requests
+  (async () => {
+    try {
+      await initVectorDB();
+      await seedCollegeAchievements();
+      await seedCutoffs();
+      await seedFAQDocuments();   // ← seed FAQ PDFs from server/data/faq/
+      startNewsCron();
+      isReady = true; // Signal readiness — all services are warm
+      app.log.info("✅ All background services (VectorDB, Seeding, Cron) initialized. Server is READY.");
+    } catch (err) {
+      app.log.error(err, "Background initialization failed");
+      isReady = true; // Still mark ready even if optional services fail
+    }
+  })();
+  // ──────────────────────────────────────────────────────────────────
+} catch (err) {
+  app.log.error(err);
+  process.exit(1);
+}
